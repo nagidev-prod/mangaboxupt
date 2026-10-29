@@ -63,6 +63,11 @@
 							<span class="ico icon-languages glyph-dark"></span>
 						</div>
 					</li>
+					<li id="storageChanger" data-i18n-title="button.storage" class="library-item press-button">
+						<div class="button-wrapper">
+							<span class="ico icon-hard-drive glyph-dark"></span>
+						</div>
+					</li>
 					<li id="offlineLibrary" data-i18n-title="button.offlinebooks" class="library-item no-grow press-button">
 						<div class="button-wrapper">
 							<span class="ico icon-hard-drive-download glyph-dark"></span>
@@ -396,6 +401,9 @@
 			}
 		}
 
+		// Offline books can also live in the app folder on the SD card (capacitor-plugin-sdstorage)
+		const isSdStorage = isCapacitor && capacitorPlatform == 'android' && !!Capacitor.Plugins.SdStorage;
+
 		topControls.classList.add(isVolumeButtons ? 'buttons4' : 'buttons3')
 		if (!isVolumeButtons) readerVolumeButtons.style = 'display: none'
 
@@ -452,6 +460,8 @@
 			offlineLibrary.remove();
 			enableDownload = false;
 		}
+
+		if (!isSdStorage) storageChanger.remove();
 
 		if (isFixZoom) {
 			Capacitor.Plugins.App.addListener('appStateChange', ({ isActive }) => {
@@ -1934,6 +1944,12 @@
 			languageDialog();
 		});
 
+		if (isSdStorage) {
+			storageChanger.addEventListener('click', () => {
+				storageDialog();
+			});
+		}
+
 		if (enableFullscreen) {
 			fullscreenChanger.addEventListener('click', () => {
 				// mb.themePrefs = (mb.themePrefs + 1) % mb.themeControl.length;
@@ -2972,26 +2988,137 @@
 			return btoa(binary);
 		}
 
-		async function capacitorGetOfflineBookData(bookId) {
+		// Download location ('internal' = Filesystem DATA folder, 'sdcard' = app folder on the SD card)
+		function obFsCall(location, method, options) {
+			if (location == 'sdcard') return Capacitor.Plugins.SdStorage[method](options);
+			return Capacitor.Plugins.Filesystem[method]({ ...options, directory: filesFolder });
+		}
+
+		// Books downloaded before the SD card option existed have no location and are internal
+		function obBookLocation(bookId) {
+			return mb.offlineBooks?.[bookId]?.location ?? 'internal';
+		}
+
+		function obGetDownloadChoice() {
+			return localStorage.getItem('mb00DownloadLocation') ?? 'auto';
+		}
+
+		async function obGetVolumes() {
+			try {
+				return await Capacitor.Plugins.SdStorage.getVolumes();
+			} catch (err) {
+				console.error('Failed to read storage volumes:', err);
+				return { internal: null, sdcard: null };
+			}
+		}
+
+		// 'mounted', 'mounted_ro', 'unavailable' or 'none' (no card at all)
+		async function obGetSdState() {
+			const volumes = await obGetVolumes();
+			return volumes.sdcard?.state ?? 'none';
+		}
+
+		// Returns where a new download should go, or null if it cannot start
+		async function obResolveDownloadLocation() {
+			if (!isSdStorage) return 'internal';
+			const choice = obGetDownloadChoice();
+			if (choice == 'internal') return 'internal';
+			const sdState = await obGetSdState();
+			if (sdState == 'mounted') return 'sdcard';
+			if (choice == 'auto') return 'internal';
+			obStorageWarning(sdState);
+			return null;
+		}
+
+		// Delete needs a writable card, otherwise the table and the files would go out of sync
+		async function obCheckLocationWritable(location) {
+			if (location != 'sdcard') return true;
+			const sdState = await obGetSdState();
+			if (sdState == 'mounted') return true;
+			obStorageWarning(sdState);
+			return false;
+		}
+
+		let obLastStorageWarning = 0;
+		function obStorageWarning(sdState, onClose = null) {
+			// Offline grids load many books at once, show the message only once
+			if (!onClose && Date.now() - obLastStorageWarning < 3000) return;
+			obLastStorageWarning = Date.now();
+			const key = sdState == 'mounted_ro' ? 'storage.sdreadonly' : 'storage.sdunavailable';
+			showModal('', false, `<span data-i18n="${key}">${t(key)}</span>`, [{
+				label: 'modal.ok', runfunction: () => {
+					closeModal();
+					if (onClose) setTimeout(onClose, 250);
+				}, high: true
+			}]);
+		}
+
+		function formatBytes(bytes) {
+			return (bytes / 1073741824).toFixed(1) + ' GB';
+		}
+
+		function buildStorageDialog(volumes) {
+			const choice = obGetDownloadChoice();
+			const sd = volumes.sdcard;
+			const sdState = sd?.state ?? 'none';
+			const options = [
+				{ value: 'internal', label: 'storage.internal', icon: 'icon-smartphone' },
+				{ value: 'sdcard', label: 'storage.sdcard', icon: 'icon-hard-drive' },
+				{ value: 'auto', label: 'storage.auto', icon: 'icon-bot' },
+			];
+			let out = `<span data-i18n="storage.title">${t('storage.title')}</span>`;
+			out = out + '<ul class="filter-menu" id="storageMenu">';
+			options.forEach(option => {
+				out = out + `<li class="filter-item filter-item-menu press-button ${choice == option.value ? 'highlighted' : ''}" onClick="setDownloadLocation('${option.value}')">
+									<div class='smallbutton-wrapper'>
+										<span class="ico ${option.icon} glyph-dark"></span>
+									</div>
+									<div class='library-name filter-menu-text' data-i18n="${option.label}">${t(option.label)}</div>
+								</li>`
+			});
+			out = out + "</ul>";
+
+			const useSd = choice == 'sdcard' || (choice == 'auto' && sdState == 'mounted');
+			const target = useSd ? sd : volumes.internal;
+			out = out + `<div style="font-size: 0.8em; opacity: 0.8; word-break: break-all; margin-top: 0.5em;">`;
+			out = out + `<div data-i18n="storage.sdstate.${sdState}">${t('storage.sdstate.' + sdState)}</div>`;
+			if (target) {
+				out = out + `<div>${t('storage.target')}: ${target.path}/offline-books</div>`;
+				out = out + `<div>${t('storage.free')}: ${formatBytes(target.freeBytes)} / ${formatBytes(target.totalBytes)}</div>`;
+			} else if (useSd) {
+				out = out + `<div data-i18n="storage.sdunavailable">${t('storage.sdunavailable')}</div>`;
+			}
+			out = out + '</div>';
+			return (out)
+		}
+
+		async function storageDialog() {
+			const volumes = await obGetVolumes();
+			showModal('', false, buildStorageDialog(volumes), [{ label: 'modal.ok', runfunction: () => closeModal(), high: true }]);
+		}
+
+		async function setDownloadLocation(value) {
+			localStorage.setItem('mb00DownloadLocation', value);
+			modalMessage.innerHTML = buildStorageDialog(await obGetVolumes());
+		}
+
+		async function capacitorGetOfflineBookData(bookId, location) {
 			const baseFolder = `offline-books/${bookId}`;
 			try {
 				console.log(`Reading offline book data for ${bookId}`);
 				// Read and parse each metadata file
-				const bookFile = await Capacitor.Plugins.Filesystem.readFile({
+				const bookFile = await obFsCall(location, 'readFile', {
 					path: `${baseFolder}/metadata-book.json`,
-					directory: filesFolder,
 					encoding: 'utf8'
 				});
 
-				const pagesFile = await Capacitor.Plugins.Filesystem.readFile({
+				const pagesFile = await obFsCall(location, 'readFile', {
 					path: `${baseFolder}/metadata-pages.json`,
-					directory: filesFolder,
 					encoding: 'utf8'
 				});
 
-				const seriesFile = await Capacitor.Plugins.Filesystem.readFile({
+				const seriesFile = await obFsCall(location, 'readFile', {
 					path: `${baseFolder}/metadata-series.json`,
-					directory: filesFolder,
 					encoding: 'utf8'
 				});
 
@@ -3001,9 +3128,8 @@
 
 
 				// Convert base folder to a WebView-friendly URL
-				const uriResult = await Capacitor.Plugins.Filesystem.getUri({
-					path: baseFolder,
-					directory: filesFolder
+				const uriResult = await obFsCall(location, 'getUri', {
+					path: baseFolder
 				});
 				const baseUrl = Capacitor.convertFileSrc(uriResult.uri);
 				const bookPath = baseUrl;
@@ -3017,15 +3143,14 @@
 			}
 		}
 
-		async function capacitorDeleteBookData(bookId) {
+		async function capacitorDeleteBookData(bookId, location) {
 			try {
 				const baseFolder = `offline-books/${bookId}`;
 
 				debugPrint(`Deleting offline book data for ${bookId}...`);
 
-				await Capacitor.Plugins.Filesystem.rmdir({
+				await obFsCall(location, 'rmdir', {
 					path: baseFolder,
-					directory: filesFolder,
 					recursive: true
 				});
 				debugPrint(`Deleted offline book ${bookId} successfully.`);
@@ -3037,7 +3162,7 @@
 			}
 		}
 
-		async function capacitorUpdateMetadata({ bookId, bookTitle, baseUrl, requestData, requestMedia }) {
+		async function capacitorUpdateMetadata({ bookId, bookTitle, baseUrl, requestData, requestMedia, location }) {
 
 			const baseDir = 'offline-books';
 			const bookFolder = `${baseDir}/${bookId}`;
@@ -3054,10 +3179,9 @@
 				if (!res.ok) throw new Error(`Book metadata failed: ${res.status}`);
 				const bookMeta = await res.json();
 
-				await Capacitor.Plugins.Filesystem.writeFile({
+				await obFsCall(location, 'writeFile', {
 					path: `${bookFolder}/metadata-book.json`,
 					data: JSON.stringify(bookMeta, null, 2),
-					directory: filesFolder,
 					encoding: 'utf8'
 				});
 
@@ -3066,10 +3190,9 @@
 				res = await fetch(`${baseUrl}/api/v1/series/${bookMeta.seriesId}`, requestData);
 				if (!res.ok) throw new Error(`Series metadata failed: ${res.status}`);
 				const seriesMeta = await res.json();
-				await Capacitor.Plugins.Filesystem.writeFile({
+				await obFsCall(location, 'writeFile', {
 					path: `${bookFolder}/metadata-series.json`,
 					data: JSON.stringify(seriesMeta, null, 2),
-					directory: filesFolder,
 					encoding: 'utf8'
 				});
 
@@ -3078,10 +3201,9 @@
 				res = await fetch(`${baseUrl}/api/v1/books/${bookId}/pages`, requestData);
 				if (!res.ok) throw new Error(`Pages metadata failed: ${res.status}`);
 				const pagesMeta = await res.json();
-				await Capacitor.Plugins.Filesystem.writeFile({
+				await obFsCall(location, 'writeFile', {
 					path: `${bookFolder}/metadata-pages.json`,
 					data: JSON.stringify(pagesMeta, null, 2),
-					directory: filesFolder,
 					encoding: 'utf8'
 				});
 				return { ok: true, path: bookFolder };
@@ -3092,7 +3214,7 @@
 			}
 		}
 
-		async function capacitorDownloadBook({ bookId, bookTitle, baseUrl, requestData, requestMedia }) {
+		async function capacitorDownloadBook({ bookId, bookTitle, baseUrl, requestData, requestMedia, location }) {
 			const mimeToExt = {
 				'image/jpeg': '.jpg',
 				'image/png': '.png',
@@ -3108,9 +3230,8 @@
 			// Helper to make directories recursively
 			async function ensureDir(path) {
 				try {
-					await Capacitor.Plugins.Filesystem.mkdir({
+					await obFsCall(location, 'mkdir', {
 						path,
-						directory: filesFolder,
 						recursive: true
 					});
 				} catch (err) {
@@ -3136,10 +3257,9 @@
 				if (!res.ok) throw new Error(`Book metadata failed: ${res.status}`);
 				const bookMeta = await res.json();
 
-				await Capacitor.Plugins.Filesystem.writeFile({
+				await obFsCall(location, 'writeFile', {
 					path: `${bookFolder}/metadata-book.json`,
 					data: JSON.stringify(bookMeta, null, 2),
-					directory: filesFolder,
 					encoding: 'utf8'
 				});
 
@@ -3149,10 +3269,9 @@
 				res = await fetch(`${baseUrl}/api/v1/series/${bookMeta.seriesId}`, requestData);
 				if (!res.ok) throw new Error(`Series metadata failed: ${res.status}`);
 				const seriesMeta = await res.json();
-				await Capacitor.Plugins.Filesystem.writeFile({
+				await obFsCall(location, 'writeFile', {
 					path: `${bookFolder}/metadata-series.json`,
 					data: JSON.stringify(seriesMeta, null, 2),
-					directory: filesFolder,
 					encoding: 'utf8'
 				});
 
@@ -3161,10 +3280,9 @@
 				res = await fetch(`${baseUrl}/api/v1/books/${bookId}/pages`, requestData);
 				if (!res.ok) throw new Error(`Pages metadata failed: ${res.status}`);
 				const pagesMeta = await res.json();
-				await Capacitor.Plugins.Filesystem.writeFile({
+				await obFsCall(location, 'writeFile', {
 					path: `${bookFolder}/metadata-pages.json`,
 					data: JSON.stringify(pagesMeta, null, 2),
-					directory: filesFolder,
 					encoding: 'utf8'
 				});
 
@@ -3176,10 +3294,9 @@
 				const thumbBuffer = await res.arrayBuffer();
 				const base64Thumb = arrayBufferToBase64(thumbBuffer);
 
-				await Capacitor.Plugins.Filesystem.writeFile({
+				await obFsCall(location, 'writeFile', {
 					path: `${bookFolder}/thumbnail.jpg`,
-					data: base64Thumb,
-					directory: filesFolder
+					data: base64Thumb
 				});
 
 				// Download all pages
@@ -3189,9 +3306,8 @@
 
 					let pageExists = false;
 					try {
-						await Capacitor.Plugins.Filesystem.stat({
+						await obFsCall(location, 'stat', {
 							path: pageFile,
-							directory: filesFolder,
 						});
 						pageExists = true;
 					} catch { }
@@ -3201,10 +3317,9 @@
 						const pageRes = await fetch(pageUrl, requestMedia);
 						if (!pageRes.ok) throw new Error(`Page ${page.number} failed: ${pageRes.status}`);
 						const pageBuffer = await pageRes.arrayBuffer();
-						await Capacitor.Plugins.Filesystem.writeFile({
+						await obFsCall(location, 'writeFile', {
 							path: pageFile,
-							data: arrayBufferToBase64(pageBuffer),
-							directory: filesFolder
+							data: arrayBufferToBase64(pageBuffer)
 						});
 					} else {
 						console.log(`Page ${page.number} already exists, skipping.`);
@@ -3212,9 +3327,8 @@
 
 					let thumbExists = false;
 					try {
-						await Capacitor.Plugins.Filesystem.stat({
+						await obFsCall(location, 'stat', {
 							path: thumbFile,
-							directory: filesFolder,
 						});
 						thumbExists = true;
 					} catch { }
@@ -3224,10 +3338,9 @@
 						const thumbRes = await fetch(thumbPageUrl, requestMedia);
 						if (!thumbRes.ok) throw new Error(`Thumb ${page.number} failed: ${thumbRes.status}`);
 						const thumbPageBuffer = await thumbRes.arrayBuffer();
-						await Capacitor.Plugins.Filesystem.writeFile({
+						await obFsCall(location, 'writeFile', {
 							path: thumbFile,
-							data: arrayBufferToBase64(thumbPageBuffer),
-							directory: filesFolder
+							data: arrayBufferToBase64(thumbPageBuffer)
 						});
 					} else {
 						console.log(`Thumb ${page.number} already exists, skipping.`);
@@ -3248,7 +3361,7 @@
 			} catch (err) {
 				debugPrint('Error in safeWriteFile:');
 				debugPrint(err);
-				return { ok: false, error: err.message };
+				return { ok: false, error: err.message, code: err.code };
 			}
 		}
 
@@ -3263,7 +3376,7 @@
 			if (status) downloadSpinner.classList.add('spin')
 		}
 
-		function obAddBookToTable(book) {
+		function obAddBookToTable(book, location) {
 			//V039
 			// determine starting page safely
 			let page = 1;
@@ -3287,6 +3400,7 @@
 					status: 'downloading',
 					percent: 0,
 					pages: book.media.pagesCount,
+					location: location,
 					users: {}
 				};
 			}
@@ -3367,7 +3481,8 @@
 						bookId: bookId,
 						baseUrl: `${mb.baseUrl}`,
 						requestData: requestData,
-						requestMedia: requestMedia
+						requestMedia: requestMedia,
+						location: obBookLocation(bookId)
 					};
 
 					if (isElectron) await window.offlineAPI.updateMetadata(bookData);
@@ -3385,15 +3500,19 @@
 				bookId: bookId,
 				baseUrl: `${mb.baseUrl}`,
 				requestData: requestData,
-				requestMedia: requestMedia
+				requestMedia: requestMedia,
+				location: obBookLocation(bookId)
 			};
 
 			if (isElectron) await window.offlineAPI.downloadBook(bookData);
-			if (isCapacitor) await capacitorDownloadBook(bookData);
+			if (isCapacitor) {
+				const result = await capacitorDownloadBook(bookData);
+				if (!result.ok && String(result.code).startsWith('SD_')) obStorageWarning(result.code == 'SD_READONLY' ? 'mounted_ro' : 'unavailable');
+			}
 
 		}
 
-		async function obDeleteBookData(bookId) {
+		async function obDeleteBookData(bookId, location) {
 			//V039
 			let result = null
 			// If the book entry is still in the table, no need to do anything
@@ -3402,7 +3521,7 @@
 			}
 
 			if (isElectron) result = await window.offlineAPI.deleteOfflineBookData(bookId)
-			if (isCapacitor) result = await capacitorDeleteBookData(bookId)
+			if (isCapacitor) result = await capacitorDeleteBookData(bookId, location)
 
 			if (result.success) {
 				console.log(`Deleted offline book ${bookId} successfully.`);
@@ -3416,7 +3535,15 @@
 		async function obLoadOfflineBook(bookId) {
 			let bookData = null;
 			if (isElectron) bookData = await window.offlineAPI.getOfflineBookData(bookId)
-			if (isCapacitor) bookData = await capacitorGetOfflineBookData(bookId)
+			if (isCapacitor) {
+				try {
+					bookData = await capacitorGetOfflineBookData(bookId, obBookLocation(bookId))
+				} catch (err) {
+					// SD card missing: let the caller degrade instead of failing
+					if (String(err.code).startsWith('SD_')) return null;
+					throw err;
+				}
+			}
 
 			if (!bookData.bookMetadata.readProgress) {
 				bookData.bookMetadata.readProgress = {};
@@ -5156,13 +5283,22 @@
 			const bookIsOffline = obIsBookCompleted(book.id);
 			const bookIsDownloading = obIsBookDownloading(book.id);
 
-			const useOfflineCopy = (offlineSession && bookIsOffline);
+			let useOfflineCopy = (offlineSession && bookIsOffline);
 			let offline = {};
 
 			if (useOfflineCopy) {
 
 				// Load saved metadata, the function also apply the new page position
 				offline = await obLoadOfflineBook(book.id);
+				// Null when the SD card holding the book is not available
+				if (!offline) {
+					obStorageWarning('unavailable');
+					useOfflineCopy = false;
+					offline = {};
+				}
+			}
+
+			if (useOfflineCopy) {
 				// Apply saved metadata to book
 				book = offline.bookMetadata;
 				// Pipe read progress into saved metadata
@@ -5370,9 +5506,12 @@
 					}
 				});
 
-				addClickPointerEvents(downloadButton, () => {
+				addClickPointerEvents(downloadButton, async () => {
+
+					const bookLocation = obBookLocation(book.id);
 
 					if (obIsBookCompleted(book.id)) {
+						if (!(await obCheckLocationWritable(bookLocation))) return;
 						// Book is finished, you can delete the book!
 						bookDownloadUI.classList.remove('done');
 						bookDownloadUI.style.bottom = '100%';
@@ -5381,8 +5520,9 @@
 						bookDownloadUI.style.alignItems = 'end';
 						obRemoveBookFromTable(book.id);
 						downloadButton.innerHTML = obRedrawDownloadButton(book.id);
-						obDeleteBookData(book.id);
+						obDeleteBookData(book.id, bookLocation);
 					} else if (obIsBookDownloading(book.id)) {
+						if (!(await obCheckLocationWritable(bookLocation))) return;
 						// Book is downloading, you can cancel the process
 						bookDownloadUI.classList.remove('done');
 						bookDownloadUI.style.bottom = '100%';
@@ -5391,16 +5531,18 @@
 						bookDownloadUI.style.alignItems = 'end';
 						obRemoveBookFromTable(book.id);
 						downloadButton.innerHTML = obRedrawDownloadButton(book.id);
-						obDeleteBookData(book.id);
+						obDeleteBookData(book.id, bookLocation);
 						obSetSpinner(false);
 					} else {
 						// Download the book!
+						const downloadLocation = await obResolveDownloadLocation();
+						if (!downloadLocation) return;
 						bookDownloadUI.classList.remove('done');
 						bookDownloadUI.style.bottom = '0%';
 						bookDownloadUISpan.innerText = '0%';
 
 
-						obAddBookToTable(book);
+						obAddBookToTable(book, downloadLocation);
 						obSetSpinner(true);
 						downloadButton.innerHTML = obRedrawDownloadButton(book.id);
 						obDownloadBook(book.id)
@@ -6334,6 +6476,11 @@
 			let useOfflineCopy = offlineSession && obIsBookCompleted(rd.bookId);
 			if (useOfflineCopy) {
 				offline = await obLoadOfflineBook(rd.bookId);
+				// SD card not available: tell the user and leave the reader
+				if (!offline) {
+					obStorageWarning('unavailable', goBack);
+					return;
+				}
 			}
 
 			const bookData = useOfflineCopy ? offline.bookMetadata : await callAPI(`c_bookdata${rd.bookId}`, `/api/v1/books/${rd.bookId}`);

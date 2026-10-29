@@ -39,6 +39,7 @@
 	"button.serverslist": "Servers List",
 	"button.serversusers": "User and Server",
 	"button.sort": "Sort Items",
+	"button.storage": "Download Location",
 	"button.testserver": "Test Server",
 	"button.themecolor": "Theme Color",
 	"filterdirection.all.long": "All Directions",
@@ -146,5 +147,17 @@
 	"theme.light": "Light Theme",
 	"theme.system": "System Theme",
 	"readervolumes.updown": "volume+ = up/left",
-	"readervolumes.downup": "volume+ = down/right"
+	"readervolumes.downup": "volume+ = down/right",
+	"storage.title": "Download Location",
+	"storage.internal": "Internal storage",
+	"storage.sdcard": "SD card (recommended)",
+	"storage.auto": "Auto (SD card if present)",
+	"storage.target": "New downloads go to",
+	"storage.free": "Free space",
+	"storage.sdstate.mounted": "SD card: ready",
+	"storage.sdstate.mounted_ro": "SD card: read-only",
+	"storage.sdstate.unavailable": "SD card: not available",
+	"storage.sdstate.none": "SD card: not found",
+	"storage.sdunavailable": "SD card not available. Insert the card to use books stored on it.",
+	"storage.sdreadonly": "The SD card is read-only. Books on it can be read but not downloaded or deleted."
 }

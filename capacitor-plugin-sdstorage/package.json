@@ -1,0 +1,24 @@
+{
+	"name": "capacitor-plugin-sdstorage",
+	"version": "1.0.0",
+	"private": true,
+	"description": "MangaBox fork: app-private storage on the removable SD card (getExternalFilesDirs)",
+	"license": "MIT",
+	"files": [
+		"android/src/main/",
+		"android/build.gradle"
+	],
+	"keywords": [
+		"capacitor",
+		"plugin",
+		"native"
+	],
+	"peerDependencies": {
+		"@capacitor/core": ">=7.0.0"
+	},
+	"capacitor": {
+		"android": {
+			"src": "android"
+		}
+	}
+}

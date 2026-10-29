@@ -232,6 +232,10 @@ jobs:
       - name: Install voume buttons plugin
         run: npm install @capacitor-community/volume-buttons
 
+      - name: Install SD card storage plugin (local)
+        if: ${{ matrix.sys == 'android' }}
+        run: npm install ./capacitor-plugin-sdstorage
+
       - name: Add iOS Info.plist permissions
         if: ${{ matrix.sys == 'ios' }}
         run: |
