@@ -159,5 +159,9 @@
 	"storage.sdstate.unavailable": "SD card: not available",
 	"storage.sdstate.none": "SD card: not found",
 	"storage.sdunavailable": "SD card not available. Insert the card to use books stored on it.",
-	"storage.sdreadonly": "The SD card is read-only. Books on it can be read but not downloaded or deleted."
+	"storage.sdreadonly": "The SD card is read-only. Books on it can be read but not downloaded or deleted.",
+	"epub.loading": "Opening book…",
+	"epub.toc": "Contents",
+	"epub.error": "This EPUB could not be opened.",
+	"epub.notoffline": "This book is not downloaded and the server is not reachable."
 }

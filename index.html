@@ -24,6 +24,7 @@
 	<link rel="stylesheet" href="style-mangabox-blankstart.css">
 	<link rel="stylesheet" href="style-mangabox-main.css">
 	<link rel="stylesheet" href="style-mangabox-reader.css">
+	<link rel="stylesheet" href="style-mangabox-epub.css">
 
 	<script>
 		let mbPrefersDarkMode = window.matchMedia('(prefers-color-scheme: dark)');
@@ -499,6 +500,9 @@
 
 	<script src="script-transliterate.js"></script>
 	<script src="script-auth.js"></script>
+	<script src="lib/jszip/jszip.min.js"></script>
+	<script src="lib/epubjs/epub.min.js"></script>
+	<script src="script-epubreader.js"></script>
 
 	<script>
 		if ('serviceWorker' in navigator) {
@@ -3584,6 +3588,8 @@
 
 				}
 			}
+			// EPUB positions saved while offline
+			await epubFlushPending();
 		}
 
 		//MBX Media Cache 
@@ -7382,10 +7388,12 @@
 		}
 
 		function handleLeftArrow() {
+			if (epubReaderActive()) return epubReaderTurn('left');
 			handleArrow('left');
 		}
 
 		function handleRightArrow() {
+			if (epubReaderActive()) return epubReaderTurn('right');
 			handleArrow('right');
 		}
 
@@ -8207,6 +8215,9 @@
 		async function loadContent() {
 			const { path, params } = getHashAndParams();
 
+			// Leaving (or reopening) the EPUB reader
+			epubReaderClose();
+
 			await executeFade(1);
 			dragbarOffReader();
 			document.querySelectorAll('.section').forEach(section => sectionHide(section));
@@ -8296,6 +8307,11 @@
 					showBackButton();
 					break;
 				case 'bookread':
+					// Text EPUBs have no page images, they open in the EPUB reader
+					if (await epubReaderOpen(params.get('book_id'))) {
+						showBackButton();
+						break;
+					}
 					await openBookReader(params.get('library_id'), params.get('series_id'), params.get('book_id'), params.get('dir'), params.get('pg'));
 					showBackButton();
 					break;
