@@ -308,6 +308,14 @@ public class SdStoragePlugin extends Plugin {
                 Uri document = target.tree.createFile(target.path);
                 try (OutputStream out = openTreeOutput(target, document, append)) {
                     out.write(bytes);
+                } catch (FileNotFoundException | SecurityException e) {
+                    // Stale lookup cache (files deleted outside the app): look everything up again once
+                    TreeStorage.clearCache(target.tree.treeUri);
+                    target.tree = new TreeStorage(getContext(), target.tree.treeUri);
+                    document = target.tree.createFile(target.path);
+                    try (OutputStream out = openTreeOutput(target, document, append)) {
+                        out.write(bytes);
+                    }
                 }
                 JSObject ret = new JSObject();
                 ret.put("uri", SdStorageProvider.uriFor(getContext(), target.tree.treeUri, target.path).toString());
@@ -390,6 +398,11 @@ public class SdStoragePlugin extends Plugin {
             JSObject ret = new JSObject();
             if (target.tree != null) {
                 Uri document = target.tree.find(target.path);
+                if (document != null && !target.tree.exists(document)) {
+                    TreeStorage.clearCache(target.tree.treeUri);
+                    target.tree = new TreeStorage(getContext(), target.tree.treeUri);
+                    document = target.tree.find(target.path);
+                }
                 if (document == null) {
                     call.reject("File does not exist", ERR_NOT_FOUND);
                     return;

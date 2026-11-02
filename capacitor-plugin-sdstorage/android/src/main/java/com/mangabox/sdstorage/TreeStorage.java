@@ -157,6 +157,15 @@ class TreeStorage {
         return created;
     }
 
+    /** Checks with the provider, cached lookups can be stale when files are deleted outside the app */
+    boolean exists(Uri uri) {
+        try (Cursor cursor = resolver.query(uri, new String[] { Document.COLUMN_DOCUMENT_ID }, null, null, null)) {
+            return cursor != null && cursor.moveToFirst();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     boolean isDirectory(Uri uri) {
         try (Cursor cursor = resolver.query(uri, new String[] { Document.COLUMN_MIME_TYPE }, null, null, null)) {
             return cursor != null && cursor.moveToFirst() && Document.MIME_TYPE_DIR.equals(cursor.getString(0));
