@@ -490,11 +490,18 @@ async function epubDisplayStart(bookId) {
 
 //MBX Open / close
 
+// Book object passed to navigateToReadBook, used to avoid fetching it again
+let epubKnownBook = null;
+function epubRememberBook(book) {
+	epubKnownBook = book?.media ? book : null;
+}
+
 // Returns true when the book was opened here, false to let the image reader handle it
 async function epubReaderOpen(bookId) {
 	const offlineBook = obIsBookCompleted?.(bookId);
-	let bookData = null;
-	if (offlineSession && offlineBook) {
+	let bookData = epubKnownBook?.id == bookId ? epubKnownBook : null;
+	epubKnownBook = null;
+	if (!bookData && offlineSession && offlineBook) {
 		bookData = (await obLoadOfflineBook(bookId))?.bookMetadata ?? null;
 	}
 	bookData ??= await callAPI(`c_bookdata${bookId}`, `/api/v1/books/${bookId}`);
@@ -555,10 +562,14 @@ async function epubReaderOpen(bookId) {
 		epubLoading(null);
 		setTimeout(() => epubShowBars(false), 1500);
 
-		// Book wide percentage, computed in the background
-		book.locations.generate(1600).then(() => {
-			if (epub.book == book && epub.location) epubUpdateProgress(epub.location);
-		}).catch(() => { });
+		// Book wide percentage, computed in the background once the first page is shown,
+		// so it does not compete with opening the book on a slow device
+		setTimeout(() => {
+			if (epub.book != book) return;
+			book.locations.generate(1600).then(() => {
+				if (epub.book == book && epub.location) epubUpdateProgress(epub.location);
+			}).catch(() => { });
+		}, 2500);
 	} catch (err) {
 		console.error('EPUB open failed:', err);
 		if (token != epub.openToken) return true;

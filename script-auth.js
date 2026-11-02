@@ -1,5 +1,12 @@
 // script.js
 
+// Komga accepts an API key instead of username and password (Komga 1.13+, created in the Komga web UI
+// under Account settings > API Keys). An empty username means the password field holds an API key.
+function komgaAuthHeader(username, secret) {
+	if (!username) return { 'X-API-Key': secret ?? '' };
+	return { 'Authorization': 'Basic ' + btoa(`${username}:${secret}`) };
+}
+
 async function checkCredentialsCap() {
 	debugPrint('check Credentials Capacitor')
 	const creds = await Capacitor.Plugins.SecureStoragePlugin.keys()
@@ -174,7 +181,7 @@ async function sessionCheck() {
 		fetchPayload = {
 			method: 'GET',
 			headers: {
-				'Authorization': 'Basic ' + btoa(`${username}:${password}`),
+				...komgaAuthHeader(username, password),
 				'X-Requested-With': 'XMLHttpRequest',
 				'skip_zrok_interstitial': '1'
 			}
@@ -376,8 +383,8 @@ async function login(serverId, test, fromDialog) {
 	// Cleanup the base URL value to ensure it has the correct format
 	baseUrlVal = cleanBaseUrlVal(baseUrlVal);
 
-	// Build the basic authentication header using the provided username and password
-	let mbAuthHeader = 'Basic ' + btoa(`${usernameVal}:${passwordVal}`);
+	// Basic authentication, or the API key when the username is empty
+	let mbAuthHeader = komgaAuthHeader(usernameVal, passwordVal);
 
 	console.log("FX - login - fetch with credentials only in web")
 
@@ -387,7 +394,7 @@ async function login(serverId, test, fromDialog) {
 		method: 'GET',
 		credentials: (isWeb && !webPWD) ? 'include' : 'omit',
 		headers: {
-			'Authorization': mbAuthHeader,
+			...mbAuthHeader,
 			'X-Requested-With': 'XMLHttpRequest',
 			'skip_zrok_interstitial': '1'
 		}
@@ -472,7 +479,9 @@ async function login(serverId, test, fromDialog) {
 
 	// Reset login credentials if this is not a "test" login attempt
 	if (!test) {
-		loginPassword.value = null;
+		// The password field only exists when logging in from a dialog
+		const passwordField = document.getElementById('loginPassword');
+		if (passwordField) passwordField.value = null;
 		mbAuthHeader = null;
 	}
 }

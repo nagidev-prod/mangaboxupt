@@ -1130,7 +1130,7 @@
 			let username = mb.serverList[mb.currentServerId].username;
 			let password = await loadUserPass(mb.currentServerId);
 
-			const out = { 'Authorization': 'Basic ' + btoa(`${username}:${password}`) }
+			const out = komgaAuthHeader(username, password)
 			username = null;
 			password = null;
 			return (out)
@@ -1317,10 +1317,12 @@
 
 		//MBX API Call Function 
 
-		async function callAPI(cacheKey, API_url, method = 'GET', body = null, returnval = true, obfetch = false) {
+		async function callAPI(cacheKey, API_url, method = 'GET', body = null, returnval = true, obfetch = false, isRetry = false) {
 			const db = await openIndexedDB();
 
-			if (offlineSession) {
+			// The retry after a network error goes straight to the cache, otherwise a server that
+			// answers the ping but fails this request made callAPI call itself forever
+			if (offlineSession && !isRetry) {
 				await onlineCheck()
 			};
 
@@ -1368,20 +1370,23 @@
 					await executeFaderGradient(0);
 					return null
 				}
-				if (!response.ok) throw new Error(`Network response was not ok: ${response.statusText}`);
+				if (!response.ok) throw Object.assign(new Error(`Network response was not ok: ${response.status} ${response.statusText}`), { httpStatus: response.status });
 
 				setNetworkStatus('online');
 
 				if (returnval) {
 					const output = parsed;
-					if (cacheKey != null) await cacheData(db, cacheKey, output);
+					// Cache for offline use without making the caller wait for the write
+					if (cacheKey != null) cacheData(db, cacheKey, output).catch(err => console.warn('Cache write failed:', err));
 					return output;
 				}
 			} catch (error) {
 				console.error(`Fetch error for ${API_url}:`, error);
+				// The server answered with an error: it is reachable, there is nothing to retry
+				if (error.httpStatus) return null;
 				setNetworkStatus('offline');
 
-				return (callAPI(cacheKey, API_url, method, body, returnval));
+				return (callAPI(cacheKey, API_url, method, body, returnval, obfetch, true));
 
 				throw error;
 			}
@@ -1533,7 +1538,7 @@
 				<div id="divPassword2" class="input-wrapper pwd ${(isWeb && !webPWD) ? 'disabled-input' : ''}" title="Password">
 					<i class="ico icon-rectangle-ellipsis"></i> <!-- Icon for password -->
 
-					<input type="password" class="login-input" id="loginPassword" "${t('login.password')}" autocorrect="off" autocapitalize="none" spellcheck="false" autocomplete="current-password" value="${await getPasswordValue(serverId, serverData)}">
+					<input type="password" class="login-input" id="loginPassword" placeholder="${t('login.password')}" autocorrect="off" autocapitalize="none" spellcheck="false" autocomplete="current-password" value="${await getPasswordValue(serverId, serverData)}">
 					<span id="viewPassword2" class="ico icon-eye right" onClick="clickPassword()"></span>
 				</div>
 				<div id="errorBox2" class="error-message logo-hidden">Invalid credentials or server URL, please try again.</div>
@@ -1596,7 +1601,7 @@
 					fetchPayload = {
 						method: 'POST',
 						headers: {
-							'Authorization': 'Basic ' + btoa(`${username}:${password}`),
+							...komgaAuthHeader(username, password),
 							'X-Requested-With': 'XMLHttpRequest',
 							'skip_zrok_interstitial': '1'
 						}
@@ -3304,6 +3309,9 @@
 			await ensureDir(thumbsFolder);
 
 			let downloadedPages = 0;
+			const downloadEntry = mb.offlineBooks?.[bookId];
+			// Cancel (or delete) removes the table entry: stop instead of writing into a deleted folder
+			const cancelled = () => !!downloadEntry && mb.offlineBooks?.[bookId] !== downloadEntry;
 
 			try {
 				debugPrint(`Downloading metadata for ${bookId}`);
@@ -3376,57 +3384,45 @@
 					downloadedPages = total;
 				}
 
-				// Download all pages
-				for (const page of pagesMeta) {
-					const pageFile = `${pagesFolder}/${page.number}${mimeToExt[page.mediaType]}`;
-					const thumbFile = `${thumbsFolder}/t_${page.number}.jpg`;
-
-					let pageExists = false;
+				// Download all pages, three at a time so network and storage work in parallel
+				const fileMissing = async (path) => {
 					try {
-						await obFsCall(location, 'stat', {
-							path: pageFile,
-						});
-						pageExists = true;
-					} catch { }
-
-					if (!pageExists) {
-						const pageUrl = `${baseUrl}/api/v1/books/${bookId}/pages/${page.number}`;
-						const pageRes = await fetch(pageUrl, requestMedia);
-						if (!pageRes.ok) throw new Error(`Page ${page.number} failed: ${pageRes.status}`);
-						const pageBuffer = await pageRes.arrayBuffer();
-						await obFsCall(location, 'writeFile', {
-							path: pageFile,
-							data: arrayBufferToBase64(pageBuffer)
-						});
-					} else {
-						console.log(`Page ${page.number} already exists, skipping.`);
+						await obFsCall(location, 'stat', { path });
+						return false;
+					} catch {
+						return true;
 					}
-
-					let thumbExists = false;
+				};
+				const saveFile = async (url, path, what) => {
+					if (!(await fileMissing(path))) return;
+					const res = await fetch(url, requestMedia);
+					if (!res.ok) throw new Error(`${what} failed: ${res.status}`);
+					await obFsCall(location, 'writeFile', { path, data: arrayBufferToBase64(await res.arrayBuffer()) });
+				};
+				let nextPage = 0;
+				let failed = false;
+				const worker = async () => {
 					try {
-						await obFsCall(location, 'stat', {
-							path: thumbFile,
-						});
-						thumbExists = true;
-					} catch { }
-
-					if (!thumbExists) {
-						const thumbPageUrl = `${baseUrl}/api/v1/books/${bookId}/pages/${page.number}/thumbnail`;
-						const thumbRes = await fetch(thumbPageUrl, requestMedia);
-						if (!thumbRes.ok) throw new Error(`Thumb ${page.number} failed: ${thumbRes.status}`);
-						const thumbPageBuffer = await thumbRes.arrayBuffer();
-						await obFsCall(location, 'writeFile', {
-							path: thumbFile,
-							data: arrayBufferToBase64(thumbPageBuffer)
-						});
-					} else {
-						console.log(`Thumb ${page.number} already exists, skipping.`);
+						while (nextPage < pagesMeta.length && !failed && !cancelled()) {
+							const page = pagesMeta[nextPage++];
+							await saveFile(`${baseUrl}/api/v1/books/${bookId}/pages/${page.number}`, `${pagesFolder}/${page.number}${mimeToExt[page.mediaType]}`, `Page ${page.number}`);
+							await saveFile(`${baseUrl}/api/v1/books/${bookId}/pages/${page.number}/thumbnail`, `${thumbsFolder}/t_${page.number}.jpg`, `Thumb ${page.number}`);
+							downloadedPages++;
+							window.dispatchEvent(new CustomEvent('download-progress', {
+								detail: { bookId, downloadedPages, total: bookMeta.media.pagesCount }
+							}));
+						}
+					} catch (err) {
+						failed = true;
+						throw err;
 					}
-					downloadedPages++;
-					// You can dispatch a custom event to your UI
-					window.dispatchEvent(new CustomEvent('download-progress', {
-						detail: { bookId, downloadedPages, total: bookMeta.media.pagesCount }
-					}));
+				};
+				await Promise.all([worker(), worker(), worker()]);
+
+				if (cancelled()) {
+					// Files written after the delete would stay behind as an orphan folder
+					if (!mb.offlineBooks?.[bookId]) await obFsCall(location, 'rmdir', { path: bookFolder, recursive: true }).catch(() => { });
+					return { ok: false, error: 'cancelled' };
 				}
 
 				debugPrint(`Downloaded book "${bookTitle}" (${bookId})`);
@@ -3667,7 +3663,22 @@
 
 		//MBX Media Cache 
 
+		// One connection for the whole session: opening costs ~100 ms on slow devices and every
+		// API call and image used to open (and never close) its own
+		let mbIndexedDB = null;
 		function openIndexedDB() {
+			mbIndexedDB ??= openIndexedDBConnection().then(db => {
+				db.onclose = () => { mbIndexedDB = null; };
+				db.onversionchange = () => { db.close(); mbIndexedDB = null; };
+				return db;
+			}).catch(err => {
+				mbIndexedDB = null;
+				throw err;
+			});
+			return mbIndexedDB;
+		}
+
+		function openIndexedDBConnection() {
 			return new Promise((resolve, reject) => {
 				const request = indexedDB.open('MangaBoxCache', 1);
 				request.onupgradeneeded = (event) => {
@@ -3751,9 +3762,23 @@
 		}
 
 
-		async function fetchMedia(url, offlineCache = true) {
+		// Requests already running, so two views asking for the same image share one download
+		const mbMediaInFlight = new Map();
+
+		function fetchMedia(url, offlineCache = true) {
+			if (!mbMediaInFlight.has(url)) {
+				mbMediaInFlight.set(url, fetchMediaOnce(url, offlineCache).finally(() => mbMediaInFlight.delete(url)));
+			}
+			return mbMediaInFlight.get(url);
+		}
+
+		async function fetchMediaOnce(url, offlineCache) {
 
 			const db = await openIndexedDB();
+
+			// Downloaded books are already on the device (internal, SD card or picked folder):
+			// copying their images into the cache would only fill the internal storage
+			if (typeof url == 'string' && (url.includes('/_capacitor_file_/') || url.includes('/_capacitor_content_/'))) offlineCache = false;
 
 			// Check RAM cache first
 			if (mb.mediaCacheRAM.has(url)) {
@@ -3791,7 +3816,7 @@
 					}
 
 					if (offlineCache) {
-						try { await cacheMedia(db, url, blob) } catch (error) { console.log("Cache dB Error") };
+						cacheMedia(db, url, blob).catch(() => console.log("Cache dB Error"));
 					}
 
 					return objectURL;
@@ -6153,6 +6178,8 @@
 		// Function that prepares the page for reading a book, once the url is setup, navigateTo triggers openBookReader function
 		function navigateToReadBook(book, readingDirection, force = false) {
 			setIncognito(false);
+			// The EPUB check needs the book media: reuse this object instead of asking the server again
+			epubRememberBook(book);
 
 			navigateTo('#bookread', {
 				library_id: book.libraryId,

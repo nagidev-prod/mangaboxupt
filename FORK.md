@@ -27,6 +27,20 @@ for offline reading, and sync the reading position with Komga.
 Reader controls: tap the left or right side (or swipe, arrow keys, volume buttons) to turn pages,
 tap the middle for the toolbar (contents, font size, light / sepia / dark).
 
+## API key login
+
+Komga API keys work: in the server dialog leave **Username empty** and paste the key in the
+password field. MangaBox then sends `X-API-Key` instead of a username and password.
+(Keys are created in the Komga web UI under Account settings > API Keys, Komga 1.13 or newer.)
+
+## Speed and fixes
+
+- one local database connection instead of one per request and image
+- cache writes no longer delay screens; the same image is downloaded once
+- images of downloaded books are not copied into the internal cache
+- pages download three at a time; cancelling a download really stops it
+- a server error (403, 500) no longer makes the app retry forever
+
 ## Building
 
 GitHub Actions (`.github/workflows/android-apk.yml`) builds every push to `sdcard-downloads` and
