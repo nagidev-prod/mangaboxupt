@@ -1,3 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- No permissions: app-specific dirs from getExternalFilesDirs() need none since API 19. -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
+<!-- No permissions: app-specific dirs from getExternalFilesDirs() need none since API 19,
+     and a folder picked with the system folder picker comes with its own persisted grant. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Serves files of the picked download folder to the WebView, see SdStorageProvider -->
+        <provider
+            android:name="com.mangabox.sdstorage.SdStorageProvider"
+            android:authorities="${applicationId}.sdstorage"
+            android:exported="false" />
+    </application>
+</manifest>

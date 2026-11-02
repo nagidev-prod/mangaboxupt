@@ -145,15 +145,19 @@ async function epubBuildFromManifest(bookId, onProgress) {
 }
 
 // Offline copy: book.epub next to the metadata, wherever the book was downloaded to
+// Returns null when there is no usable copy (not downloaded, SD card removed, Electron download)
 async function epubLoadOfflineCopy(bookId) {
 	if (typeof obLoadOfflineBook != 'function' || !obIsBookCompleted(bookId)) return null;
-	const offline = await obLoadOfflineBook(bookId);
-	if (!offline) return null;
-	const url = offline.fileUrl ? offline.fileUrl('book.epub') : `${offline.bookPath}/book.epub`;
-	if (!url) return null;
-	const res = await fetch(url);
-	if (!res.ok) return null;
-	return await res.arrayBuffer();
+	try {
+		const offline = await obLoadOfflineBook(bookId);
+		if (!offline?.bookPath) return null;
+		const res = await fetch(`${offline.bookPath}/book.epub`);
+		if (!res.ok) return null;
+		return await res.arrayBuffer();
+	} catch (err) {
+		console.warn('EPUB offline copy not readable:', err);
+		return null;
+	}
 }
 
 //MBX Reader UI

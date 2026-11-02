@@ -2992,9 +2992,11 @@
 			return btoa(binary);
 		}
 
-		// Download location ('internal' = Filesystem DATA folder, 'sdcard' = app folder on the SD card)
+		// Download location of a book: 'internal' (Filesystem DATA folder), 'sdcard' (app folder on
+		// the SD card) or 'tree:<uri>' (folder picked by the user), see capacitor-plugin-sdstorage
 		function obFsCall(location, method, options) {
 			if (location == 'sdcard') return Capacitor.Plugins.SdStorage[method](options);
+			if (location?.startsWith('tree:')) return Capacitor.Plugins.SdStorage[method]({ ...options, tree: location.substring(5) });
 			return Capacitor.Plugins.Filesystem[method]({ ...options, directory: filesFolder });
 		}
 
@@ -3003,8 +3005,14 @@
 			return mb.offlineBooks?.[bookId]?.location ?? 'internal';
 		}
 
+		// 'internal', 'sdcard', 'auto' or 'folder'
 		function obGetDownloadChoice() {
 			return localStorage.getItem('mb00DownloadLocation') ?? 'auto';
+		}
+
+		function obGetDownloadFolder() {
+			const tree = localStorage.getItem('mb00DownloadTree');
+			return tree ? { tree, name: localStorage.getItem('mb00DownloadTreeName') ?? tree } : null;
 		}
 
 		async function obGetVolumes() {
@@ -3016,8 +3024,19 @@
 			}
 		}
 
-		// 'mounted', 'mounted_ro', 'unavailable' or 'none' (no card at all)
-		async function obGetSdState() {
+		// Picked folder info: { tree, name, state, freeBytes, totalBytes }, state as for the SD card
+		async function obGetFolderInfo(tree) {
+			try {
+				return await Capacitor.Plugins.SdStorage.checkFolder({ tree });
+			} catch (err) {
+				console.error('Failed to check the download folder:', err);
+				return { tree, name: tree, state: 'unavailable' };
+			}
+		}
+
+		// 'mounted', 'mounted_ro', 'unavailable' or 'none' (no card / no folder at all)
+		async function obGetLocationState(location) {
+			if (location?.startsWith('tree:')) return (await obGetFolderInfo(location.substring(5))).state;
 			const volumes = await obGetVolumes();
 			return volumes.sdcard?.state ?? 'none';
 		}
@@ -3027,19 +3046,27 @@
 			if (!isSdStorage) return 'internal';
 			const choice = obGetDownloadChoice();
 			if (choice == 'internal') return 'internal';
-			const sdState = await obGetSdState();
+			if (choice == 'folder') {
+				const folder = obGetDownloadFolder();
+				if (!folder) return 'internal';
+				const state = await obGetLocationState('tree:' + folder.tree);
+				if (state == 'mounted') return 'tree:' + folder.tree;
+				obStorageWarning(state);
+				return null;
+			}
+			const sdState = await obGetLocationState('sdcard');
 			if (sdState == 'mounted') return 'sdcard';
 			if (choice == 'auto') return 'internal';
 			obStorageWarning(sdState);
 			return null;
 		}
 
-		// Delete needs a writable card, otherwise the table and the files would go out of sync
+		// Delete needs a writable location, otherwise the table and the files would go out of sync
 		async function obCheckLocationWritable(location) {
-			if (location != 'sdcard') return true;
-			const sdState = await obGetSdState();
-			if (sdState == 'mounted') return true;
-			obStorageWarning(sdState);
+			if (location == 'internal') return true;
+			const state = await obGetLocationState(location);
+			if (state == 'mounted') return true;
+			obStorageWarning(state);
 			return false;
 		}
 
@@ -3061,7 +3088,11 @@
 			return (bytes / 1073741824).toFixed(1) + ' GB';
 		}
 
-		function buildStorageDialog(volumes) {
+		function escapeHtml(text) {
+			return String(text ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+		}
+
+		function buildStorageDialog(volumes, folderInfo) {
 			const choice = obGetDownloadChoice();
 			const sd = volumes.sdcard;
 			const sdState = sd?.state ?? 'none';
@@ -3069,6 +3100,7 @@
 				{ value: 'internal', label: 'storage.internal', icon: 'icon-smartphone' },
 				{ value: 'sdcard', label: 'storage.sdcard', icon: 'icon-hard-drive' },
 				{ value: 'auto', label: 'storage.auto', icon: 'icon-bot' },
+				{ value: 'folder', label: 'storage.folder', icon: 'icon-folder-open' },
 			];
 			let out = `<span data-i18n="storage.title">${t('storage.title')}</span>`;
 			out = out + '<ul class="filter-menu" id="storageMenu">';
@@ -3082,28 +3114,50 @@
 			});
 			out = out + "</ul>";
 
-			const useSd = choice == 'sdcard' || (choice == 'auto' && sdState == 'mounted');
-			const target = useSd ? sd : volumes.internal;
 			out = out + `<div style="font-size: 0.8em; opacity: 0.8; word-break: break-all; margin-top: 0.5em;">`;
-			out = out + `<div data-i18n="storage.sdstate.${sdState}">${t('storage.sdstate.' + sdState)}</div>`;
-			if (target) {
-				out = out + `<div>${t('storage.target')}: ${target.path}/offline-books</div>`;
-				out = out + `<div>${t('storage.free')}: ${formatBytes(target.freeBytes)} / ${formatBytes(target.totalBytes)}</div>`;
-			} else if (useSd) {
-				out = out + `<div data-i18n="storage.sdunavailable">${t('storage.sdunavailable')}</div>`;
+			if (choice == 'folder' && folderInfo) {
+				out = out + `<div>${t('storage.target')}: ${escapeHtml(folderInfo.name)}/offline-books</div>`;
+				out = out + `<div data-i18n="storage.folderstate.${folderInfo.state}">${t('storage.folderstate.' + folderInfo.state)}</div>`;
+				if (folderInfo.freeBytes != null) out = out + `<div>${t('storage.free')}: ${formatBytes(folderInfo.freeBytes)} / ${formatBytes(folderInfo.totalBytes)}</div>`;
+			} else {
+				const useSd = choice == 'sdcard' || (choice == 'auto' && sdState == 'mounted');
+				const target = useSd ? sd : volumes.internal;
+				out = out + `<div data-i18n="storage.sdstate.${sdState}">${t('storage.sdstate.' + sdState)}</div>`;
+				if (target) {
+					out = out + `<div>${t('storage.target')}: ${escapeHtml(target.path)}/offline-books</div>`;
+					out = out + `<div>${t('storage.free')}: ${formatBytes(target.freeBytes)} / ${formatBytes(target.totalBytes)}</div>`;
+				} else if (useSd) {
+					out = out + `<div data-i18n="storage.sdunavailable">${t('storage.sdunavailable')}</div>`;
+				}
 			}
 			out = out + '</div>';
 			return (out)
 		}
 
+		async function storageDialogContent() {
+			const folder = obGetDownloadFolder();
+			const folderInfo = folder ? await obGetFolderInfo(folder.tree) : null;
+			return buildStorageDialog(await obGetVolumes(), folderInfo);
+		}
+
 		async function storageDialog() {
-			const volumes = await obGetVolumes();
-			showModal('', false, buildStorageDialog(volumes), [{ label: 'modal.ok', runfunction: () => closeModal(), high: true }]);
+			showModal('', false, await storageDialogContent(), [{ label: 'modal.ok', runfunction: () => closeModal(), high: true }]);
 		}
 
 		async function setDownloadLocation(value) {
+			if (value == 'folder') {
+				// Always open the system folder picker, cancelling keeps the previous choice
+				try {
+					const picked = await Capacitor.Plugins.SdStorage.pickFolder();
+					localStorage.setItem('mb00DownloadTree', picked.tree);
+					localStorage.setItem('mb00DownloadTreeName', picked.name);
+				} catch (err) {
+					if (err.code != 'CANCELLED') console.error('Folder picker failed:', err);
+					return;
+				}
+			}
 			localStorage.setItem('mb00DownloadLocation', value);
-			modalMessage.innerHTML = buildStorageDialog(await obGetVolumes());
+			modalMessage.innerHTML = await storageDialogContent();
 		}
 
 		async function capacitorGetOfflineBookData(bookId, location) {
@@ -3302,6 +3356,25 @@
 					path: `${bookFolder}/thumbnail.jpg`,
 					data: base64Thumb
 				});
+
+				// Text EPUB: no page images, the book file itself is kept for the EPUB reader
+				if (epubIsReflowable(bookMeta)) {
+					const total = bookMeta.media.pagesCount;
+					const report = (fraction) => window.dispatchEvent(new CustomEvent('download-progress', {
+						detail: { bookId, downloadedPages: Math.floor(fraction * total), total }
+					}));
+					const epubData = new Uint8Array(await epubFetchArrayBuffer(bookId, (fraction) => report(fraction * 0.9)));
+					// Written in chunks so a large book never sits in memory as one base64 string
+					const chunkSize = 2 * 1024 * 1024;
+					for (let offset = 0; offset == 0 || offset < epubData.length; offset += chunkSize) {
+						await obFsCall(location, offset == 0 ? 'writeFile' : 'appendFile', {
+							path: `${bookFolder}/book.epub`,
+							data: arrayBufferToBase64(epubData.subarray(offset, offset + chunkSize))
+						});
+						report(0.9 + 0.1 * Math.min(1, (offset + chunkSize) / epubData.length));
+					}
+					downloadedPages = total;
+				}
 
 				// Download all pages
 				for (const page of pagesMeta) {
