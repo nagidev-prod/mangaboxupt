@@ -1,0 +1,94 @@
+name: Android APK (fork)
+
+# Builds the Android app with capacitor-build-android.sh and publishes the APK as a GitHub release.
+# Signing: the secret ANDROID_DEBUG_KEYSTORE_B64 (base64 of a debug keystore, alias androiddebugkey,
+# passwords "android") keeps the signature stable so new builds install as updates.
+
+on:
+  push:
+    branches:
+      - sdcard-downloads
+    paths-ignore:
+      - "docs/**"
+      - "stores/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    env:
+      MB_APP_ID: com.zpaolo11x.mangabox.sd
+      MB_APP_NAME: MangaBox SD
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Signing key
+        id: signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+        run: |
+          mkdir -p ~/.android
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+            echo "stable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::ANDROID_DEBUG_KEYSTORE_B64 is not set, this APK gets a throwaway signature and cannot update an earlier install"
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Version
+        id: version
+        run: |
+          BASE=$(node -p 'require("./package.json").version')
+          echo "name=$BASE-sd.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "code=$((100000 + ${{ github.run_number }}))" >> "$GITHUB_OUTPUT"
+
+      - name: Build APK
+        env:
+          MB_VERSION_NAME: ${{ steps.version.outputs.name }}
+          MB_VERSION_CODE: ${{ steps.version.outputs.code }}
+        run: ./capacitor-build-android.sh
+
+      - name: Collect APK
+        run: |
+          mkdir -p output
+          cp android/app/build/outputs/apk/debug/app-debug.apk "output/MangaBox-SD-${{ steps.version.outputs.name }}.apk"
+          ls -la output
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: MangaBox-SD-${{ steps.version.outputs.name }}
+          path: output/*.apk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.name }}
+          name: MangaBox SD ${{ steps.version.outputs.name }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          files: output/*.apk
+          body: |
+            Android build of the `${{ github.ref_name }}` branch (${{ github.sha }}).
+            App id `com.zpaolo11x.mangabox.sd`, installs next to the official MangaBox.
+            Stable signature: ${{ steps.signing.outputs.stable }}
